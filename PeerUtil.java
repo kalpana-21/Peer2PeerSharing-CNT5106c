@@ -145,17 +145,46 @@ public class PeerUtil {
 	 * @param sourcePeerId The ID of the source peer.
 	 * @return The handshake packet as a byte array.
 	 */
-	public synchronized byte[] generateHandshakePacket(int sourcePeerId) {
-		String handshakeHeader = Constants.HEADER_FOR_HANDSHAKE;
-		byte[] headerBytes = handshakeHeader.getBytes();
-		String zeroBits = Constants.HEADER_FOR_ZERO_BITS_HANDSHAKE;
-		byte[] zeroBytes = zeroBits.getBytes();
-		byte[] peerIdBytes = String.valueOf(sourcePeerId).getBytes();
-		byte[] handshakePacket = new byte[headerBytes.length + zeroBytes.length + peerIdBytes.length];
-		System.arraycopy(headerBytes, 0, handshakePacket, 0, headerBytes.length);
-		System.arraycopy(zeroBytes, 0, handshakePacket, headerBytes.length, zeroBytes.length);
-		System.arraycopy(peerIdBytes, 0, handshakePacket, headerBytes.length + zeroBytes.length, peerIdBytes.length);
 
-		return handshakePacket;
+	public synchronized byte[] generateHandshakePacket(int sourcePeerId) {
+    		String handshakeHeader = Constants.HEADER_FOR_HANDSHAKE;
+    		byte[] headerBytes = handshakeHeader.getBytes();
+    		String zeroBits = Constants.HEADER_FOR_ZERO_BITS_HANDSHAKE;
+    		byte[] zeroBytes = zeroBits.getBytes();
+    		byte[] peerIdBytes = String.valueOf(sourcePeerId).getBytes();
+    		byte[] handshakePacket = new byte[headerBytes.length + zeroBytes.length + peerIdBytes.length];
+
+    		int index = 0;
+
+    		// Copy header bytes
+    		for (byte b : headerBytes) {
+        		handshakePacket[index++] = b;
+   		 }
+
+    		// Copy zero bytes
+    		for (byte b : zeroBytes) {
+        		handshakePacket[index++] = b;
+    		}
+
+    		// Copy peer ID bytes
+    		for (byte b : peerIdBytes) {
+        		handshakePacket[index++] = b;
+    		}
+
+    		return handshakePacket;
 	}
+
+	// public synchronized byte[] generateHandshakePacket(int sourcePeerId) {
+	// 	String handshakeHeader = Constants.HEADER_FOR_HANDSHAKE;
+	// 	byte[] headerBytes = handshakeHeader.getBytes();
+	// 	String zeroBits = Constants.HEADER_FOR_ZERO_BITS_HANDSHAKE;
+	// 	byte[] zeroBytes = zeroBits.getBytes();
+	// 	byte[] peerIdBytes = String.valueOf(sourcePeerId).getBytes();
+	// 	byte[] handshakePacket = new byte[headerBytes.length + zeroBytes.length + peerIdBytes.length];
+	// 	System.arraycopy(headerBytes, 0, handshakePacket, 0, headerBytes.length);
+	// 	System.arraycopy(zeroBytes, 0, handshakePacket, headerBytes.length, zeroBytes.length);
+	// 	System.arraycopy(peerIdBytes, 0, handshakePacket, headerBytes.length + zeroBytes.length, peerIdBytes.length);
+
+	// 	return handshakePacket;
+	// }
 }
