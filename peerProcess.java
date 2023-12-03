@@ -51,7 +51,173 @@ public class peerProcess {
 	private static boolean isCompleteFile;  // Flag to indicate if the current peer has the complete file
 
 
+	// This class handles the initiation of TCP connections with peers that started earlier.
+	class Client implements Runnable {
 
+		@Override
+		public void run() {
+			int idx = 0;
+			Iterator<Entry<Integer, NeighborPeer>> iterator = neighborPeers.entrySet().iterator();
+
+			// Loop through the peers that started before the current peer.
+			while (idx < currPeerIdx) {
+				Entry<Integer, NeighborPeer> entry = iterator.next();
+				int peerId = entry.getKey();
+				NeighborPeer peerObject = entry.getValue();
+				String hostName = peerObject.getHost();
+				int portNumber = peerObject.getPortNo();
+
+				try {
+					// Establish a TCP connection with the peer.
+					Socket socket = new Socket(hostName, portNumber);
+					DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+					DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+
+					// Send a handshake packet to the peer.
+					byte[] handshakeHeader = peerUtil.generateHandshakePacket(srcPeerId);
+					outputStream.write(handshakeHeader);
+
+					// Receive and process the handshake response.
+					byte[] receivedHandshake = new byte[handshakeHeader.length];
+					inputStream.readFully(receivedHandshake);
+					int receivedPeerId = Integer.parseInt(new String(Arrays.copyOfRange(receivedHandshake, 28, 32)));
+
+					// If the handshake is successful, establish the connection.
+					if (receivedPeerId == peerId) {
+						NeighbrConn neighborConnection = new NeighbrConn(socket, peerObject);
+						neighborConnection.initiateConnection();
+						neighbrConnMap.put(peerId, neighborConnection);
+						log.logForTcpConnectionTo(srcPeerId, peerId);
+					}
+					idx++;
+					outputStream.flush();
+				} catch (UnknownHostException uhe) {
+					// Handle unknown host exceptions.
+					uhe.printStackTrace();
+				} catch (IOException ioe) {
+					// Handle IO exceptions.
+					ioe.printStackTrace();
+				} catch (Exception e) {
+					// Handle other exceptions.
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+
+
+
+
+	//This class Initiates TCP connections with subsequent peers by awaiting their connection requests and then exchanges handshake packets to establish communication.
+	class Server implements Runnable {
+
+		@Override
+		public void run() {
+			int peerIndex = currPeerIdx;
+			try {
+				ServerSocket serverListener = new ServerSocket(srcPort);
+				// Continuously listen for incoming connections from peers starting after the current peer.
+				while (peerIndex < totalNoOfPeers - 1) {
+					Socket connectionSocket = serverListener.accept();
+					DataInputStream dataInput = new DataInputStream(connectionSocket.getInputStream());
+					DataOutputStream dataOutput = new DataOutputStream(connectionSocket.getOutputStream());
+
+					// Read the handshake packet sent by the connecting peer.
+					byte[] receivedHandshake = new byte[32];
+					dataInput.readFully(receivedHandshake);
+					int connectingPeerId = Integer.parseInt(new String(Arrays.copyOfRange(receivedHandshake, 28, 32)));
+
+					// Respond with a handshake packet to the connecting peer.
+					byte[] handshakeResponse = peerUtil.generateHandshakePacket(srcPeerId);
+					dataOutput.write(handshakeResponse);
+
+					// Retrieve the corresponding NeighborPeer object and establish a connection.
+					NeighborPeer connectedPeer = neighborPeers.get(connectingPeerId);
+					NeighbrConn connectionHandler = new NeighbrConn(connectionSocket, connectedPeer);
+					connectionHandler.initiateConnection();
+					neighbrConnMap.put(connectingPeerId, connectionHandler);
+					log.logForTcpConnectionFrom(srcPeerId, connectingPeerId);
+					peerIndex++;
+				}
+			} catch (UnknownHostException uhe) {
+				// Handle exceptions related to unknown hosts.
+				uhe.printStackTrace();
+			} catch (IOException ioe) {
+				// Handle input/output exceptions.
+				ioe.printStackTrace();
+			} catch (Exception e) {
+				// Handle any other exceptions.
+				e.printStackTrace();
+			}
+		}
+	}
+	// This class manages the choking and unchoking of peers based on their download rates and interest status.
+	class ChokeManager implements Runnable {
+
+		// Sorts and returns a list of peers based on their download rates.
+		public List<Map.Entry<Integer, Integer>> getPeersBasedOnDwnldRt() {
+			List<Map.Entry<Integer, Integer>> orderedPList = new LinkedList<>(dwnldRate.entrySet());
+			Collections.sort(orderedPList, new Comparator<Map.Entry<Integer, Integer>>() {
+				public int compare(Map.Entry<Integer, Integer> o1, Map.Entry<Integer, Integer> o2) {
+					return o1.getValue().compareTo(o2.getValue());
+				}
+			});
+			return orderedPList;
+		}
+
+		// The main execution method for the choke management thread.
+		public void run() {
+			int unchokeTime = commCon.getUnchokingInterval();
+			try {
+				// Continuously manage choking and unchoking while not all peers have the complete file.
+				while (peersWithFullFile.get() < totalNoOfPeers) {
+					int intrstPSize = peersInterested.size();
+					if (intrstPSize > 0) {
+						int prefNeighbors = commCon.getNumberOfNeighbors();
+
+						// Unchoke a smaller number of peers if fewer than preferred are interested.
+						if (intrstPSize < prefNeighbors) {
+							for (int pId : peersInterested) {
+								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(pId);
+								if (!npiObj.unchkd) {
+									npiObj.sendUnChokeMessage(false);
+								}
+							}
+						} else {
+							// Select and unchoke preferred peers based on download rates.
+							List<Map.Entry<Integer, Integer>> sortedPeersMapList = getPeersBasedOnDwnldRt();
+							List<Integer> tempPeersList = new ArrayList<>(peersInterested);
+							int[] prefPs = new int[prefNeighbors];
+							Random rand = new Random();
+
+							for (int i = 0; i < prefNeighbors; i++) {
+								int rndIdx = rand.nextInt(tempPeersList.size());
+								int pId = tempPeersList.remove(rndIdx);
+								prefPs[i] = pId;
+								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(pId);
+								if (!npiObj.unchkd) {
+									npiObj.sendUnChokeMessage(false);
+								}
+							}
+
+							log.logForChangeOfPreferredNeighbors(srcPeerId, prefPs);
+
+							// Choke peers not selected as preferred.
+							for (int peerId : tempPeersList) {
+								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(peerId);
+								npiObj.sendChokeMessage();
+							}
+						}
+					}
+					TimeUnit.SECONDS.sleep(unchokeTime);
+				}
+			} catch (InterruptedException ie) {
+				// Handle interruption during sleep.
+			} catch (Exception e) {
+				// Handle other exceptions.
+			}
+		}
+	}
 
 	/**
 	 * Represents a connection with a neighbor peer in a peer-to-peer network.
@@ -226,7 +392,6 @@ public class peerProcess {
 			try {
 				os.write(msg);  // Write the message to the output stream
 				os.flush();  // Ensure all data is sent by flushing the stream
-				log.logForBitFieldSent(srcPeerId, peerId);  // Log the event of sending a bitfield message
 			} catch (IOException ex) {
 				ex.printStackTrace();  // Print the stack trace in case of an IOException
 			}
@@ -357,13 +522,6 @@ public class peerProcess {
 			try {
 				os.write(message);  // Write the message to the output stream
 				os.flush();  // Ensure all data is sent by flushing the stream
-
-				// Log the appropriate event based on the interest status
-				if (isIntrstd) {
-					log.logForSendInterestedMessage(srcPeerId, peerId);  // Log the sending of an 'interested' message
-				} else {
-					log.logForSendNotInterestedMessage(srcPeerId, peerId);  // Log the sending of a 'not interested' message
-				}
 			} catch (IOException ex) {
 				ex.printStackTrace();  // Print the stack trace in case of an IOException
 			}
@@ -427,7 +585,6 @@ public class peerProcess {
 				try {
 					os.write(message);  // Write the message to the output stream
 					os.flush();         // Ensure all data is sent by flushing the stream
-					log.logForSendRequestMessage(srcPeerId, peerId, randChunkIdx);  // Log the sending of the 'request' message
 				} catch (IOException ex) {
 					ex.printStackTrace();  // Print the stack trace in case of an IOException
 				}
@@ -449,7 +606,7 @@ public class peerProcess {
 			if ((unchkd || (optUnchokedPeer.get() == peerId)) && mapForBitField.get(pieceIdx) == 1) {
 				try {
 					ByteBuffer byteBuf = ByteBuffer.allocate(4); // Allocate a ByteBuffer for the piece index
-					byte[] piece = peerUtil.getChunk(srcPeerId, pieceIdx); // Retrieve the piece data
+					byte[] piece = peerUtil.fetchChunk(srcPeerId, pieceIdx,commCon); // Retrieve the piece data
 					byte[] idx = byteBuf.putInt(pieceIdx).array(); // Convert the index to a byte array
 
 					// Create an array to hold both the index and the piece data
@@ -487,7 +644,6 @@ public class peerProcess {
 			try {
 				os.write(message);  // Write the message to the output stream
 				os.flush();         // Ensure all data is sent by flushing the stream
-				log.logForSendHaveMessage(srcPeerId, peerId, pieceIdx);  // Log the sending of the 'have' message
 			} catch (IOException ex) {
 				ex.printStackTrace();  // Print the stack trace in case of an IOException
 			}
@@ -617,7 +773,6 @@ public class peerProcess {
 							peer.setBitfield(peer_bit);
 							// Check if the peer has the complete file
 							boolean hasCompleteFile = true;
-							log.logForBitFieldRcvd(srcPeerId, peerId);
 							for (int i = 0; i < peer_bit.length; i++) {
 								if (peer_bit[i] == 0) {
 									hasCompleteFile = false;
@@ -685,7 +840,7 @@ public class peerProcess {
 								for (int i = 0; i < piece.length; i++) {
 									is.read(piece, i, 1);
 								}
-								peerUtil.storeChunk(srcPeerId, idxOfReceivedP, piece);
+								peerUtil.saveChunk(srcPeerId, idxOfReceivedP, piece, commCon);
 								boolean haveICompleted = true;
 								int n0OfPIHave = 0;
 								for (Map.Entry<Integer, Integer> e : mapForBitField.entrySet()) {
@@ -703,7 +858,7 @@ public class peerProcess {
 									isCompleteFile = true;
 									log.logforCompletionOfDownload(srcPeerId);
 									TimeUnit.SECONDS.sleep(2);
-									peerUtil.combineChunksIntoFile(srcPeerId, commCon);
+									peerUtil.mixChunksIntoFile(srcPeerId, commCon);
 								} else if (!peersCompleted.contains(srcPeerId)) {
 									sendRqsttMessage();
 								}
@@ -744,77 +899,6 @@ public class peerProcess {
 
 
 	}
-
-
-	// This class manages the choking and unchoking of peers based on their download rates and interest status.
-	class ChokeManager implements Runnable {
-
-		// Sorts and returns a list of peers based on their download rates.
-		public List<Map.Entry<Integer, Integer>> getPeersBasedOnDwnldRt() {
-			List<Map.Entry<Integer, Integer>> orderedPList = new LinkedList<>(dwnldRate.entrySet());
-			Collections.sort(orderedPList, new Comparator<Map.Entry<Integer, Integer>>() {
-				public int compare(Map.Entry<Integer, Integer> o1, Map.Entry<Integer, Integer> o2) {
-					return o1.getValue().compareTo(o2.getValue());
-				}
-			});
-			return orderedPList;
-		}
-
-		// The main execution method for the choke management thread.
-		public void run() {
-			int unchokeTime = commCon.getUnchokingInterval();
-			try {
-				// Continuously manage choking and unchoking while not all peers have the complete file.
-				while (peersWithFullFile.get() < totalNoOfPeers) {
-					int intrstPSize = peersInterested.size();
-					if (intrstPSize > 0) {
-						int prefNeighbors = commCon.getNumberOfNeighbors();
-
-						// Unchoke a smaller number of peers if fewer than preferred are interested.
-						if (intrstPSize < prefNeighbors) {
-							for (int pId : peersInterested) {
-								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(pId);
-								if (!npiObj.unchkd) {
-									npiObj.sendUnChokeMessage(false);
-								}
-							}
-						} else {
-							// Select and unchoke preferred peers based on download rates.
-							List<Map.Entry<Integer, Integer>> sortedPeersMapList = getPeersBasedOnDwnldRt();
-							List<Integer> tempPeersList = new ArrayList<>(peersInterested);
-							int[] prefPs = new int[prefNeighbors];
-							Random rand = new Random();
-
-							for (int i = 0; i < prefNeighbors; i++) {
-								int rndIdx = rand.nextInt(tempPeersList.size());
-								int pId = tempPeersList.remove(rndIdx);
-								prefPs[i] = pId;
-								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(pId);
-								if (!npiObj.unchkd) {
-									npiObj.sendUnChokeMessage(false);
-								}
-							}
-
-							log.logForChangeOfPreferredNeighbors(srcPeerId, prefPs);
-
-							// Choke peers not selected as preferred.
-							for (int peerId : tempPeersList) {
-								peerProcess.NeighbrConn npiObj = neighbrConnMap.get(peerId);
-								npiObj.sendChokeMessage();
-							}
-						}
-					}
-					TimeUnit.SECONDS.sleep(unchokeTime);
-				}
-			} catch (InterruptedException ie) {
-				// Handle interruption during sleep.
-			} catch (Exception e) {
-				// Handle other exceptions.
-			}
-		}
-	}
-
-
 
 	// Manages the optimistic unchoking of peers in a peer-to-peer network.
 	class OptimisticChokeManager implements Runnable {
@@ -859,106 +943,6 @@ public class peerProcess {
 	}
 
 
-	// This class handles the initiation of TCP connections with peers that started earlier.
-	class Client implements Runnable {
-
-		@Override
-		public void run() {
-			int idx = 0;
-			Iterator<Entry<Integer, NeighborPeer>> iterator = neighborPeers.entrySet().iterator();
-
-			// Loop through the peers that started before the current peer.
-			while (idx < currPeerIdx) {
-				Entry<Integer, NeighborPeer> entry = iterator.next();
-				int peerId = entry.getKey();
-				NeighborPeer peerObject = entry.getValue();
-				String hostName = peerObject.getHost();
-				int portNumber = peerObject.getPortNo();
-
-				try {
-					// Establish a TCP connection with the peer.
-					Socket socket = new Socket(hostName, portNumber);
-					DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-					DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-
-					// Send a handshake packet to the peer.
-					byte[] handshakeHeader = peerUtil.generateHandshakePacket(srcPeerId);
-					outputStream.write(handshakeHeader);
-
-					// Receive and process the handshake response.
-					byte[] receivedHandshake = new byte[handshakeHeader.length];
-					inputStream.readFully(receivedHandshake);
-					int receivedPeerId = Integer.parseInt(new String(Arrays.copyOfRange(receivedHandshake, 28, 32)));
-
-					// If the handshake is successful, establish the connection.
-					if (receivedPeerId == peerId) {
-						NeighbrConn neighborConnection = new NeighbrConn(socket, peerObject);
-						neighborConnection.initiateConnection();
-						neighbrConnMap.put(peerId, neighborConnection);
-						log.logForTcpConnectionTo(srcPeerId, peerId);
-					}
-					idx++;
-					outputStream.flush();
-				} catch (UnknownHostException uhe) {
-					// Handle unknown host exceptions.
-					uhe.printStackTrace();
-				} catch (IOException ioe) {
-					// Handle IO exceptions.
-					ioe.printStackTrace();
-				} catch (Exception e) {
-					// Handle other exceptions.
-					e.printStackTrace();
-				}
-			}
-		}
-	}
-
-
-	//This class Initiates TCP connections with subsequent peers by awaiting their connection requests and then exchanges handshake packets to establish communication.
-	class Server implements Runnable {
-
-		@Override
-		public void run() {
-			int peerIndex = currPeerIdx;
-			try {
-				ServerSocket serverListener = new ServerSocket(srcPort);
-				// Continuously listen for incoming connections from peers starting after the current peer.
-				while (peerIndex < totalNoOfPeers - 1) {
-					Socket connectionSocket = serverListener.accept();
-					DataInputStream dataInput = new DataInputStream(connectionSocket.getInputStream());
-					DataOutputStream dataOutput = new DataOutputStream(connectionSocket.getOutputStream());
-
-					// Read the handshake packet sent by the connecting peer.
-					byte[] receivedHandshake = new byte[32];
-					dataInput.readFully(receivedHandshake);
-					int connectingPeerId = Integer.parseInt(new String(Arrays.copyOfRange(receivedHandshake, 28, 32)));
-
-					// Respond with a handshake packet to the connecting peer.
-					byte[] handshakeResponse = peerUtil.generateHandshakePacket(srcPeerId);
-					dataOutput.write(handshakeResponse);
-
-					// Retrieve the corresponding NeighborPeer object and establish a connection.
-					NeighborPeer connectedPeer = neighborPeers.get(connectingPeerId);
-					NeighbrConn connectionHandler = new NeighbrConn(connectionSocket, connectedPeer);
-					connectionHandler.initiateConnection();
-					neighbrConnMap.put(connectingPeerId, connectionHandler);
-					log.logForTcpConnectionFrom(srcPeerId, connectingPeerId);
-					peerIndex++;
-				}
-			} catch (UnknownHostException uhe) {
-				// Handle exceptions related to unknown hosts.
-				uhe.printStackTrace();
-			} catch (IOException ioe) {
-				// Handle input/output exceptions.
-				ioe.printStackTrace();
-			} catch (Exception e) {
-				// Handle any other exceptions.
-				e.printStackTrace();
-			}
-		}
-	}
-
-
 	// Configures peer information and updates the peer map
 	private static void configurePeerInformation(List<String> peerInfoLines) throws Exception {
 		totalNoOfPeers = 0;
@@ -995,7 +979,7 @@ public class peerProcess {
 		configurePeerInformation(peerInfoLines);
 
 		// Set up logging and file directory for the peer
-		File peerLogFile = peerUtil.createPeerDirectoryAndLogFile(srcPeerId);
+		File peerLogFile = peerUtil.buildDirectoryAndLogFile(srcPeerId);
 		log = new LoggingClass(peerLogFile);
 		log.readCommonCfgFile(srcPeerId, commCon);
 
@@ -1006,8 +990,8 @@ public class peerProcess {
 			peersWithFullFile.incrementAndGet();
 			System.out.println(srcPeerId + " (I) have the full file");
 			fileStatusFlag = 1;
-			peerUtil.splitFileIntoChunks("" + srcPeerId, commCon);
-			peerUtil.combineChunksIntoFile(srcPeerId, commCon);
+			peerUtil.divideFileIntoChunks("" + srcPeerId, commCon);
+			peerUtil.mixChunksIntoFile(srcPeerId, commCon);
 		}
 
 		// Set bitfield for all chunks
