@@ -255,7 +255,7 @@ public class LoggingClass {
 		// Generating a timestamp in a specified format
 		String timeStamp = new SimpleDateFormat("y-M-d 'at' h:m:s a z").format(Calendar.getInstance().getTime());
 		// Appending the timestamp and a message indicating the receipt of the 'have' message
-		logRecord.append("["+timeStamp + "]: Peer [" + peerId1 +"] received 'have' message from [" + peerId2+ "] for the piece: " + idx + ".");
+		logRecord.append("["+timeStamp + "]: Peer [" + peerId1 +"] received the 'have' message from [" + peerId2+ "] for the piece: " + idx + ".");
 
 		try {
 			// Call the logHelper method to handle the actual logging
